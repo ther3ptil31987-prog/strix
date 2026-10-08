@@ -23,6 +23,7 @@ from strix.config.models import (
     StrixProvider,
     configure_sdk_api_route,
     configure_sdk_model_defaults,
+    model_supports_images,
     supports_strict_tool_schemas,
     uses_chat_completions_tool_schema,
 )
@@ -153,6 +154,7 @@ def _compose_root_instructions_override(
     is_diff_scoped: bool,
     interactive: bool,
     system_prompt_context: dict[str, Any],
+    supports_images: bool,
 ) -> str | None:
     if root_instructions_override is None:
         return None
@@ -166,6 +168,7 @@ def _compose_root_instructions_override(
         interactive=interactive,
         system_prompt_context=system_prompt_context,
         include_scope=False,
+        supports_images=supports_images,
     )
     return (
         f"{base_instructions}\n\n"
@@ -265,6 +268,9 @@ async def run_strix_scan(
     strict_tool_schemas = supports_strict_tool_schemas(resolved_model)
     if not strict_tool_schemas:
         logger.info("Sending non-strict tool schemas: %s caps strict tools", resolved_model)
+    supports_images = model_supports_images(resolved_model)
+    if not supports_images:
+        logger.info("Leaving out image tools: %s does not accept images", resolved_model)
 
     if budget_policy not in ("stop", "pause"):
         raise ValueError(f"unknown budget_policy: {budget_policy!r}")
@@ -468,6 +474,7 @@ async def run_strix_scan(
             is_diff_scoped=is_diff_scoped,
             interactive=interactive,
             system_prompt_context=root_context,
+            supports_images=supports_images,
         )
 
         root_agent = build_strix_agent(
@@ -482,6 +489,7 @@ async def run_strix_scan(
             strict_tool_schemas=strict_tool_schemas,
             system_prompt_context=root_context,
             instructions_override=root_instructions,
+            supports_images=supports_images,
         )
 
         if not is_resume:
@@ -501,6 +509,7 @@ async def run_strix_scan(
             chat_completions_tools=chat_completions_tools,
             strict_tool_schemas=strict_tool_schemas,
             system_prompt_context=scope_context,
+            supports_images=supports_images,
         )
 
         async def spawn_child_agent(**kwargs: Any) -> dict[str, Any]:
@@ -528,6 +537,7 @@ async def run_strix_scan(
             "spawn_child_agent": spawn_child_agent,
             "scan_targets": build_scan_targets(scan_config),
             "max_context_images": settings.runtime.max_context_images,
+            "supports_images": supports_images,
         }
 
         root_session = open_agent_session(root_id, agents_db)
@@ -592,7 +602,7 @@ async def run_strix_scan(
         )
         if not interactive and result is not None:
             final = getattr(result, "final_output", None)
-            # Lifecycle tools mark the root completed. 
+            # Lifecycle tools mark the root completed.
             async with coordinator._lock:
                 root_completed = coordinator.statuses.get(root_id) == "completed"
             if not root_completed:
