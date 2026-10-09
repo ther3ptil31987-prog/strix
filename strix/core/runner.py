@@ -49,6 +49,7 @@ from strix.report.state import get_global_report_state
 from strix.runtime import session_manager
 from strix.telemetry import set_scan_phase
 from strix.telemetry.logging import set_scan_id, setup_scan_logging
+from strix.tools.finish.tool import finish_scan
 from strix.tools.output_store import (
     WORKSPACE_SPILL_DIR,
     configure_spill_writer,
@@ -58,6 +59,7 @@ from strix.tools.output_store import (
 if TYPE_CHECKING:
     from agents.memory import SQLiteSession
     from agents.result import RunResultBase
+    from agents.tool import Tool
 
     from strix.runtime.status import StatusSink
     from strix.tools.mcp import (
@@ -67,6 +69,8 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+_MCP_PROMPT_WARMUP_TIMEOUT_SECONDS = 30.0
 
 StreamEventSink = Callable[[str, Any], None]
 
@@ -90,6 +94,19 @@ def _mcp_roster_payload(registry: McpRegistry) -> list[dict[str, Any]]:
             "state": status.state,
         }
         for status in registry.statuses()
+    ]
+
+
+def _mcp_prompt_roster(registry: McpRegistry) -> list[dict[str, Any]]:
+    """The MCP roster rendered in agent prompts, with only verified counts."""
+    return [
+        {
+            "name": summary.name,
+            "purpose": summary.purpose,
+            "tool_count": summary.tool_count if summary.state == "catalog_ready" else None,
+            "state": summary.state,
+        }
+        for summary in registry.summaries()
     ]
 
 
@@ -200,6 +217,7 @@ async def run_strix_scan(
     status_sink: StatusSink | None = None,
     mcp_connection_requests: list[McpConnectionRequest] | None = None,
     mcp_status_sink: McpStatusSink | None = None,
+    root_finish_tool: Tool = finish_scan,
 ) -> RunResultBase | None:
     """Run or resume one Strix scan against a sandbox.
 
@@ -222,6 +240,7 @@ async def run_strix_scan(
     command-line default) it reads ``~/.strix/mcp-servers.json`` itself. Either
     way the engine does the connecting, so the caller passes inert configs plus
     metadata and never live sessions.
+    ``root_finish_tool`` is the tool the root agent ends the run with.
     """
 
     def report(phase: str) -> None:
@@ -278,6 +297,7 @@ async def run_strix_scan(
         coordinator = AgentCoordinator()
     coordinator.set_snapshot_path(agents_path)
     coordinator.set_budget_policy(budget_policy)
+    coordinator.root_finish_tool = root_finish_tool.name
 
     from strix.tools.coverage.tools import hydrate_coverage_from_disk
     from strix.tools.notes.tools import hydrate_notes_from_disk
@@ -438,19 +458,13 @@ async def run_strix_scan(
                 _record_mcp_connections(mcp_registry.names())
                 report(
                     f"MCP: configured {len(mcp_registry)} connection(s); "
-                    "warming them in the background"
+                    "connecting and listing tools"
                 )
                 scope_context["mcp_available"] = True
-                scope_context["mcp_connections"] = [
-                    {
-                        "name": summary.name,
-                        "purpose": summary.purpose,
-                        "tool_count": summary.tool_count,
-                    }
-                    for summary in mcp_registry.summaries()
-                ]
+                scope_context["mcp_connections"] = _mcp_prompt_roster(mcp_registry)
 
                 def _emit_mcp_status() -> None:
+                    scope_context["mcp_connections"] = _mcp_prompt_roster(mcp_registry)
                     roster = _mcp_roster_payload(mcp_registry)
                     _persist_mcp_status(roster)
                     if mcp_status_sink is not None:
@@ -461,7 +475,11 @@ async def run_strix_scan(
 
                 mcp_registry.set_status_sink(_emit_mcp_status)
                 _emit_mcp_status()
-                mcp_registry.start_warmup(max_concurrency=6)
+                warmup_task = mcp_registry.start_warmup(max_concurrency=6)
+                await asyncio.wait(
+                    {warmup_task},
+                    timeout=_MCP_PROMPT_WARMUP_TIMEOUT_SECONDS,
+                )
         except Exception:
             logger.exception("Failed to configure user MCP servers; continuing without them")
 
@@ -490,6 +508,7 @@ async def run_strix_scan(
             system_prompt_context=root_context,
             instructions_override=root_instructions,
             supports_images=supports_images,
+            finish_tool=root_finish_tool,
         )
 
         if not is_resume:
