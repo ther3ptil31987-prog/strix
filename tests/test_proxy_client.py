@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+from caido_sdk_client.errors import OperationUserError
 
 from strix.runtime.caido_handle import CaidoBootstrapHandle
 from strix.tools.proxy import caido_api, tools
@@ -252,3 +253,11 @@ async def test_existing_request_ids_queries_current_project(
 
     assert existing == {"1042"}
     assert looked_up == ["1042", "1088"]
+
+
+def test_err_logs_caido_errors_as_warnings(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING", logger="strix.tools.proxy.tools"):
+        tools._err("list_requests", OperationUserError(""))
+
+    [record] = caplog.records
+    assert record.levelname == "WARNING"
