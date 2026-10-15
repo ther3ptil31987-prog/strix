@@ -41,6 +41,7 @@ from openai.types.shared import Reasoning
 from strix.agents.prompt import CACHE_POINT
 from strix.config import codex
 from strix.config.loader import load_settings
+from strix.config.tool_call_arguments import repair_input
 from strix.config.tool_call_ids import TurnCallIdRewriter, dedupe_input
 from strix.config.tool_call_limits import TurnToolCallLimiter
 from strix.llm import request_log
@@ -255,6 +256,12 @@ class _TurnGuardModel(Model):
     Ids that collide with the history are rewritten before the turn is
     recorded, and already-corrupted histories are repaired on the way out.
 
+    Tool-call arguments: a turn whose ``arguments`` are not valid JSON fails
+    that one call with a parse error, but the raw string is recorded and
+    strict providers then reject every request that replays it. Such
+    arguments are rewritten to a valid JSON object on the way out (see
+    :mod:`strix.config.tool_call_arguments`).
+
     Tool-call volume: a degenerate response can queue hundreds of calls that
     the run loop then honours one by one. Only the first
     ``LLM_MAX_TOOL_CALLS_PER_TURN`` calls of a response are kept.
@@ -313,7 +320,7 @@ class _TurnGuardModel(Model):
         conversation_id: str | None,
         prompt: ResponsePromptParam | None,
     ) -> ModelResponse:
-        sanitized = dedupe_input(input)
+        sanitized = _sanitize_input(input)
         rewriter = TurnCallIdRewriter(sanitized)
         system_instructions, sanitized = _split_cached_prefix(
             system_instructions, sanitized, model_settings
@@ -349,7 +356,7 @@ class _TurnGuardModel(Model):
         conversation_id: str | None,
         prompt: ResponsePromptParam | None,
     ) -> AsyncIterator[TResponseStreamEvent]:
-        sanitized = dedupe_input(input)
+        sanitized = _sanitize_input(input)
         rewriter = TurnCallIdRewriter(sanitized)
         system_instructions, sanitized = _split_cached_prefix(
             system_instructions, sanitized, model_settings
@@ -377,6 +384,10 @@ class _TurnGuardModel(Model):
             if guarded is not None:
                 yield guarded
         self._log_dropped(limiter)
+
+
+def _sanitize_input(model_input: str | list[TResponseInputItem]) -> str | list[Any]:
+    return repair_input(dedupe_input(model_input))
 
 
 def _split_cached_prefix(

@@ -1876,10 +1876,6 @@ def _build_dependency_evidence(
         evidence += f"\n\n**Usage analysis:** {label}."
         if reachability_evidence and reachability_evidence.strip():
             evidence += f" {reachability_evidence.strip()}"
-        evidence += (
-            " This is a prioritization signal from static analysis, not a"
-            " proof of exploitability or of safety."
-        )
     return evidence
 
 

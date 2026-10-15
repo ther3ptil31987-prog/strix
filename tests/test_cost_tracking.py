@@ -136,6 +136,7 @@ def test_cost_callback_estimates_cost_with_provider_prefixed_model() -> None:
 
     with (
         patch("strix.report.state.get_global_report_state", return_value=report_state),
+        patch("strix.report.state.resolve_litellm_model", side_effect=lambda model: model),
         patch("litellm.completion_cost", side_effect=fake_completion_cost),
     ):
         litellm_cost_callback(kwargs, response)

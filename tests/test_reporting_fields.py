@@ -663,7 +663,6 @@ async def test_dependency_report_records_reachability(report_state: ReportState)
         == "src/render.ts:14 calls `_.template()`."
     )
     assert "**Usage analysis:**" in report["evidence"]
-    assert "not a proof of exploitability or of safety" in report["evidence"]
     # The level must never influence the rating — that comes from the contextual
     # breakdown, or from advisory_cvss when no breakdown applies.
     assert report["severity"] == "high"
