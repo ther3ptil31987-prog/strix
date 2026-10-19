@@ -599,7 +599,7 @@ async def _run_until_lifecycle(
                     hooks=hooks,
                 )
         except BudgetPausedError as exc:
-            if coordinator.budget_policy != "pause":
+            if coordinator.budget_policy != "pause" and not exc.operator_pause:
                 raise
             # The agent parked right before an LLM call; everything up to that
             # point is already in its session. Once resumed, the same call goes
@@ -612,6 +612,7 @@ async def _run_until_lifecycle(
                 # Stopped while parked (operator stop or a parent's stop_agent).
                 await coordinator.reset_recovery(agent_id)
                 return result
+            await coordinator.consume_pending(agent_id)
             if session is not None:
                 input_data = []
             continue
@@ -831,7 +832,7 @@ async def _run_cycle(  # noqa: PLR0912, PLR0915
                 await coordinator.detach_stream(agent_id, stream)
         except BudgetPausedError as exc:
             logger.info("agent %s paused at the scan budget limit: %s", agent_id, exc)
-            if coordinator.budget_policy == "pause":
+            if coordinator.budget_policy == "pause" or exc.operator_pause:
                 await coordinator.park_for_budget(agent_id)
             else:
                 await coordinator.pause_for_budget(agent_id)
