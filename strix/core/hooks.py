@@ -4,18 +4,21 @@ from __future__ import annotations
 
 import logging
 import math
+import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from agents.lifecycle import RunHooks
 
 from strix.core.agents import BudgetPolicy, coordinator_from_context
-from strix.report.state import get_global_report_state
+from strix.report.state import get_global_report_state, record_tool_call
 
 
 if TYPE_CHECKING:
     from agents import RunContextWrapper
     from agents.agent import Agent
     from agents.items import ModelResponse, TResponseInputItem
+    from agents.tool import Tool
 
 
 logger = logging.getLogger(__name__)
@@ -163,6 +166,7 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
         max_turns: int | None = None,
         interactive: bool = False,
         budget_policy: BudgetPolicy = "stop",
+        record_tool_timings: bool = False,
     ) -> None:
         _validate_budget(max_budget_usd)
         if max_turns is not None and max_turns <= 0:
@@ -175,6 +179,8 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
         self._max_turns = max_turns
         self._interactive = interactive
         self._budget_policy: BudgetPolicy = budget_policy
+        self._record_tool_timings = record_tool_timings
+        self._tool_starts: dict[str, tuple[datetime, float]] = {}
 
     @property
     def max_budget_usd(self) -> float | None:
@@ -314,6 +320,37 @@ class ReportUsageHooks(RunHooks[dict[str, Any]]):
                 f"agent's final report. {_wrapup_directive(context, stage)}"
             )
         input_items.append({"role": "user", "content": content})
+
+    async def on_tool_start(
+        self,
+        context: RunContextWrapper[dict[str, Any]],
+        agent: Agent[dict[str, Any]],  # noqa: ARG002
+        tool: Tool,  # noqa: ARG002
+    ) -> None:
+        call_id = getattr(context, "tool_call_id", None)
+        if self._record_tool_timings and isinstance(call_id, str):
+            self._tool_starts[call_id] = (datetime.now(UTC), time.monotonic())
+
+    async def on_tool_end(
+        self,
+        context: RunContextWrapper[dict[str, Any]],
+        agent: Agent[dict[str, Any]],  # noqa: ARG002
+        tool: Tool,
+        result: object,  # noqa: ARG002
+    ) -> None:
+        call_id = getattr(context, "tool_call_id", None)
+        start = self._tool_starts.pop(call_id, None) if isinstance(call_id, str) else None
+        if start is None:
+            return
+        started_at, started = start
+        ctx = context.context if isinstance(context.context, dict) else {}
+        agent_id = ctx.get("agent_id")
+        record_tool_call(
+            started_at=started_at,
+            agent_id=agent_id if isinstance(agent_id, str) else None,
+            tool=tool.name,
+            duration_ms=round((time.monotonic() - started) * 1000),
+        )
 
     async def on_llm_end(
         self,

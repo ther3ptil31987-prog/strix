@@ -163,6 +163,7 @@ class TelemetrySettings(BaseSettings):
     model_config = _BASE_CONFIG
 
     enabled: bool = Field(default=True, alias="STRIX_TELEMETRY")
+    run_record_timings: bool = Field(default=False, alias="STRIX_RUN_RECORD_TIMINGS")
 
 
 WebSearchProvider = Literal["auto", "perplexity", "exa"]

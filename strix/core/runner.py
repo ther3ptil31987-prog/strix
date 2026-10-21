@@ -54,6 +54,7 @@ from strix.tools.output_store import (
     WORKSPACE_SPILL_DIR,
     configure_spill_writer,
 )
+from strix.tools.reporting.tool import create_vulnerability_report
 
 
 if TYPE_CHECKING:
@@ -172,6 +173,7 @@ def _compose_root_instructions_override(
     interactive: bool,
     system_prompt_context: dict[str, Any],
     supports_images: bool,
+    report_tool: str,
 ) -> str | None:
     if root_instructions_override is None:
         return None
@@ -186,6 +188,7 @@ def _compose_root_instructions_override(
         system_prompt_context=system_prompt_context,
         include_scope=False,
         supports_images=supports_images,
+        report_tool=report_tool,
     )
     return (
         f"{base_instructions}\n\n"
@@ -218,6 +221,7 @@ async def run_strix_scan(
     mcp_connection_requests: list[McpConnectionRequest] | None = None,
     mcp_status_sink: McpStatusSink | None = None,
     root_finish_tool: Tool = finish_scan,
+    report_tool: Tool = create_vulnerability_report,
 ) -> RunResultBase | None:
     """Run or resume one Strix scan against a sandbox.
 
@@ -241,6 +245,8 @@ async def run_strix_scan(
     way the engine does the connecting, so the caller passes inert configs plus
     metadata and never live sessions.
     ``root_finish_tool`` is the tool the root agent ends the run with.
+    ``report_tool`` is the tool every agent files findings with, in place of
+    ``create_vulnerability_report``.
     """
 
     def report(phase: str) -> None:
@@ -419,6 +425,7 @@ async def run_strix_scan(
             max_turns=max_turns,
             interactive=interactive,
             budget_policy=budget_policy,
+            record_tool_timings=settings.telemetry.run_record_timings,
         )
         coordinator.set_budget_limit_setter(hooks.set_max_budget_usd)
         if interactive and budget_policy != "pause":
@@ -494,6 +501,7 @@ async def run_strix_scan(
             interactive=interactive,
             system_prompt_context=root_context,
             supports_images=supports_images,
+            report_tool=report_tool.name,
         )
 
         root_agent = build_strix_agent(
@@ -510,6 +518,7 @@ async def run_strix_scan(
             instructions_override=root_instructions,
             supports_images=supports_images,
             finish_tool=root_finish_tool,
+            report_tool=report_tool,
         )
 
         if not is_resume:
@@ -530,6 +539,7 @@ async def run_strix_scan(
             strict_tool_schemas=strict_tool_schemas,
             system_prompt_context=scope_context,
             supports_images=supports_images,
+            report_tool=report_tool,
         )
 
         async def spawn_child_agent(**kwargs: Any) -> dict[str, Any]:

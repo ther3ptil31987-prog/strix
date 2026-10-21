@@ -141,6 +141,10 @@ affecting the agents that do the actual testing.
   Telemetry toggle. Set to `0`, `false`, `no`, or `off` to disable telemetry (PostHog, Scarf, OTEL).
 </ParamField>
 
+<ParamField path="STRIX_RUN_RECORD_TIMINGS" default="false" type="boolean">
+  Record every LLM request's and tool call's timing in `run.json`, under `llm_requests` and `tool_calls`. Adds about 0.5 MB to a typical scan's `run.json`.
+</ParamField>
+
 <ParamField path="TRACELOOP_BASE_URL" type="string">
   OTLP/Traceloop base URL for remote OpenTelemetry export. If unset, Strix keeps traces local only.
 </ParamField>

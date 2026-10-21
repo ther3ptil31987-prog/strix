@@ -705,7 +705,11 @@ def configure_sdk_model_defaults(settings: Settings) -> None:
     """Apply Strix config to SDK-native defaults."""
     llm = settings.llm
     set_tracing_disabled(True)
+    from strix.report.state import record_llm_request
+
     request_log.install()
+    if settings.telemetry.run_record_timings:
+        request_log.register_sink(record_llm_request)
     if codex.subscription_model(llm.model):
         return
     _configure_litellm_compatibility()
