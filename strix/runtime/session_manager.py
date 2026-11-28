@@ -19,7 +19,7 @@ from agents.sandbox.manifest import Environment, Manifest
 
 from strix.config import load_settings
 from strix.runtime.backends import backend_supports_bind_mounts, get_backend
-from strix.runtime.caido_bootstrap import bootstrap_caido
+from strix.runtime.caido_bootstrap import bootstrap_caido, start_proxy_fallback
 from strix.runtime.caido_handle import CaidoBootstrapHandle
 from strix.runtime.deferred_session import DeferredSandboxClient, DeferredSandboxSession
 
@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 # In-container Caido sidecar port (matches the image's caido-cli bind).
 _CONTAINER_CAIDO_PORT = 48080
+_DISABLE_PROXY_ENV = "STRIX_DISABLE_PROXY"
 
 
 _SESSION_CACHE: dict[str, dict[str, Any]] = {}
@@ -64,6 +65,17 @@ def _host_identity_env() -> dict[str, str]:
     # Bind-mount ownership only needs mapping on Linux, where the container uid
     # must match the host's.
     return {"STRIX_HOST_UID": str(os.getuid()), "STRIX_HOST_GID": str(os.getgid())}
+
+
+def _proxy_env(caido_url: str, *, enabled: bool) -> dict[str, str]:
+    if not enabled:
+        return {_DISABLE_PROXY_ENV: "1"}
+    return {
+        "http_proxy": caido_url,
+        "https_proxy": caido_url,
+        "ALL_PROXY": caido_url,
+        "NO_PROXY": "localhost,127.0.0.1",
+    }
 
 
 def build_bind_mounts(local_sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -268,6 +280,28 @@ async def _resolve_extra_file_archive(
     return build_extra_file_archive(files, local_sources) if files else None
 
 
+async def _bootstrap_or_fall_back(
+    session: Any, *, host_url: str, container_url: str, upstream: str | None
+) -> Any:
+    try:
+        return await bootstrap_caido(session, host_url=host_url, container_url=container_url)
+    except Exception:
+        await _start_pass_through(session, upstream)
+        raise
+
+
+async def _start_pass_through(session: Any, upstream: str | None) -> None:
+    try:
+        started = await start_proxy_fallback(session, port=_CONTAINER_CAIDO_PORT, upstream=upstream)
+    except Exception:
+        logger.exception("Pass-through proxy raised after the Caido bootstrap failed")
+        return
+    if started:
+        logger.warning("Caido bootstrap failed; sandbox traffic now uses a pass-through proxy")
+    else:
+        logger.error("Caido bootstrap failed and the pass-through proxy did not start")
+
+
 async def create_or_reuse(
     scan_id: str,
     *,
@@ -276,6 +310,8 @@ async def create_or_reuse(
     extra_files: list[dict[str, Any]] | Awaitable[list[dict[str, Any]] | None] | None = None,
     status_sink: StatusSink | None = None,
     defer: bool = False,
+    proxy: bool = True,
+    proxy_upstream: str | None = None,
 ) -> dict[str, Any]:
     """Return the existing session bundle for ``scan_id`` or create a new one.
 
@@ -288,6 +324,14 @@ async def create_or_reuse(
     and unpacked inside the sandbox right after bring-up. ``extra_files`` may
     also be an awaitable resolving to that list: provisioning starts at once and
     the files are awaited only when the sandbox is ready to receive them.
+
+    ``proxy=False`` brings the sandbox up without the Caido proxy: nothing is
+    routed through it and the bundle's ``caido_client`` is ``None``.
+
+    When the Caido bootstrap fails, a pass-through proxy takes over Caido's port
+    so the sandbox keeps its network. ``proxy_upstream`` (``host:port``) names
+    the proxy Caido forwards to inside the sandbox, if any; the pass-through
+    then relays only to it.
     """
 
     def report(phase: str) -> None:
@@ -322,13 +366,11 @@ async def create_or_reuse(
                 "PYTHONUNBUFFERED": "1",
                 "HOST_GATEWAY": "host.docker.internal",
                 **_host_identity_env(),
-                "http_proxy": container_caido_url,
-                "https_proxy": container_caido_url,
-                "ALL_PROXY": container_caido_url,
-                "NO_PROXY": "localhost,127.0.0.1",
+                **_proxy_env(container_caido_url, enabled=proxy),
             },
         ),
     )
+    exposed_ports = (_CONTAINER_CAIDO_PORT,) if proxy else ()
 
     logger.info(
         "Creating sandbox session for scan %s (backend=%s, image=%s)",
@@ -343,7 +385,7 @@ async def create_or_reuse(
             backend(
                 image=image,
                 manifest=manifest,
-                exposed_ports=(_CONTAINER_CAIDO_PORT,),
+                exposed_ports=exposed_ports,
                 bind_mounts=bind_mounts,
             )
         )
@@ -366,10 +408,11 @@ async def create_or_reuse(
         return host_caido_url
 
     def _caido(session: Any, host_caido_url: str) -> Any:
-        return bootstrap_caido(
+        return _bootstrap_or_fall_back(
             session,
             host_url=host_caido_url,
             container_url=container_caido_url,
+            upstream=proxy_upstream,
         )
 
     if defer:
@@ -377,7 +420,7 @@ async def create_or_reuse(
         deferred = DeferredSandboxSession(
             bring_up,
             manifest=manifest,
-            exposed_ports=(_CONTAINER_CAIDO_PORT,),
+            exposed_ports=exposed_ports,
         )
 
         async def _caido_when_up() -> Any:
@@ -389,22 +432,25 @@ async def create_or_reuse(
             "session": deferred,
             "caido_client": CaidoBootstrapHandle(
                 asyncio.create_task(_caido_when_up(), name=f"caido-bootstrap-{scan_id}")
-            ),
+            )
+            if proxy
+            else None,
         }
         _SESSION_CACHE[scan_id] = bundle
         logger.info("Sandbox session for scan %s deferred and cached", scan_id)
         return bundle
 
     client, session = await _bring_up()
-    host_caido_url = await _caido_url(session)
-    caido_client = CaidoBootstrapHandle(
-        asyncio.create_task(_caido(session, host_caido_url), name=f"caido-bootstrap-{scan_id}")
-    )
-
     bundle = {
         "client": client,
         "session": session,
-        "caido_client": caido_client,
+        "caido_client": CaidoBootstrapHandle(
+            asyncio.create_task(
+                _caido(session, await _caido_url(session)), name=f"caido-bootstrap-{scan_id}"
+            )
+        )
+        if proxy
+        else None,
     }
     _SESSION_CACHE[scan_id] = bundle
     logger.info("Sandbox session for scan %s ready and cached", scan_id)

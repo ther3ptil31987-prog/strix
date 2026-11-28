@@ -187,6 +187,7 @@ def _compose_root_instructions_override(
     supports_images: bool,
     report_tool: str,
     coverage_tools: bool,
+    proxy_tools: bool,
     replace_scan_prompt: bool = False,
 ) -> str | None:
     if root_instructions_override is None:
@@ -207,6 +208,7 @@ def _compose_root_instructions_override(
         supports_images=supports_images,
         report_tool=report_tool,
         coverage_tools=coverage_tools,
+        proxy_tools=proxy_tools,
     )
     return (
         f"{base_instructions}\n\n"
@@ -244,6 +246,8 @@ async def run_strix_scan(
     root_finish_tool: Tool = finish_scan,
     report_tool: Tool = create_vulnerability_report,
     coverage_tools: bool = True,
+    proxy: bool = True,
+    proxy_upstream: str | None = None,
     subagent_turn_limits: Mapping[str, int] | None = None,
     select_tools: Callable[..., Sequence[Tool]] | None = None,
 ) -> RunResultBase | None:
@@ -423,6 +427,8 @@ async def run_strix_scan(
         local_sources=local_sources or [],
         extra_files=extra_files,
         status_sink=status_sink,
+        proxy=proxy,
+        proxy_upstream=proxy_upstream,
     )
     report("Waiting for the first model response")
     logger.info("Sandbox ready for scan %s", scan_id)
@@ -558,6 +564,7 @@ async def run_strix_scan(
             supports_images=supports_images,
             report_tool=report_tool.name,
             coverage_tools=coverage_tools,
+            proxy_tools=proxy,
             replace_scan_prompt=replace_root_scan_prompt,
         )
 
@@ -578,6 +585,7 @@ async def run_strix_scan(
             finish_tool=root_finish_tool,
             report_tool=report_tool,
             coverage_tools=coverage_tools,
+            proxy_tools=proxy,
             select_tools=select_tools,
         )
 
@@ -602,6 +610,7 @@ async def run_strix_scan(
             supports_images=supports_images,
             report_tool=report_tool,
             coverage_tools=coverage_tools,
+            proxy_tools=proxy,
             select_tools=select_tools,
         )
 
